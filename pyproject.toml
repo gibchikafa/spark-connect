@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spark_connect"
+description = "spark_connect"
+keywords = ["spark_connect", "pyspark", "magic", "ipython", "spark"]
+requires-python = ">=3.8"
+dependencies = ["loguru", "click", "findspark", "psutil", "kubernetes"]
+dynamic = ["version"]
+classifiers = [
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.8',
+    'Programming Language :: Python :: 3.9',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+]
+[project.optional-dependencies]
+pyspark = ["pyspark[pandas_on_spark,sql,connect]"]
+magic = ["spark_connect[pyspark]", "ipython"]
+
+all = ["spark_connect[pyspark]", "spark_connect[magic]"]
+test = ["spark_connect[all]", "pytest", "pytest-cov", "pytype", "pytest-timeout"]
+
+dev = ["spark_connect[test]"]
+
+[[project.authors]]
+name = "Gibson Chikafa"
+email = "gibbschikafa@gmail.com"
+
+[project.readme]
+file = "README.md"
+content-type = "text/markdown"
+
+[project.license]
+text = "BSD license"
+
+[project.urls]
+Source = "https://github.com/gibchikafa/spark-connect"
+
+[tool.check-manifest]
+ignore = [".*"]
+
+[tool.hatch.version]
+path = "spark_connect/__init__.py"
