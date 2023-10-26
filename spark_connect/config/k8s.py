@@ -9,9 +9,9 @@ if INCLUSTER:
     with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
         default_namespace = f.read()
 else:
-    default_namespace = "spark-app"
+    default_namespace = "default"
 
-NAMESPACE = os.getenv("SPARK_EXECUTOR_NS", default_namespace)
+NAMESPACE = os.getenv("SPARK_CONNECT_NAMESPACE", default_namespace)
 
 
 def get_k8s_config(config_file_path=None):
@@ -28,3 +28,10 @@ def get_k8s_config(config_file_path=None):
     cert_file = k8s_config.cert_file
 
     return host, token, ca, key_file, cert_file
+
+def get_namespace():
+    if not INCLUSTER:
+        return "sparglim"
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
+        default_namespace = f.read()
+    return default_namespace

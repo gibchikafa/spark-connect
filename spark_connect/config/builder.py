@@ -36,7 +36,6 @@ class ConfigBuilder(SparkEnvConfiger, metaclass=Singleton):
     def get_or_create(self) -> SparkSession:
         if self._spark:
             return self._spark
-
         if not self.master_configured:
             self.default_master_config()
 

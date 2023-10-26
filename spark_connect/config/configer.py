@@ -3,19 +3,20 @@ from __future__ import annotations
 import os
 import json
 from collections import UserDict
-from functools import wraps
-from typing import Any, Dict, Iterable, Literal, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, Optional, Tuple, Union
 
 from kubernetes.config.incluster_config import SERVICE_TOKEN_FILENAME
 
-from spark_connect.config.k8s import INCLUSTER, get_k8s_config
-from spark_connect.exceptions import AlreadyConfiguredError, UnconfigurableError
+from spark_connect.config.k8s import INCLUSTER, get_k8s_config, NAMESPACE, get_namespace
+from spark_connect.constants import SPARK_CONFIG_DEFAULT_DIR, SPARK_CONFIG_FILE_NAME, DEFAULT_SERVICE_ACCOUNT
+from spark_connect.exceptions import AlreadyConfiguredError, UnconfigurableError, SparkConnectServerCreateError
 from spark_connect.log import logger
 from spark_connect.utils import get_host_ip, get_spark_version
 from spark_connect.server.k8s_spark_connect_server import SparkConnectServer
 
 ConfigEnvMapper = Dict[str, Tuple[Union[Iterable, str], Optional[str]]]
 SPARK_VERSION = get_spark_version() or "3.4.1"  # Assume 3.4.1 if not found
+
 
 class Config(UserDict):
     def __init__(self, dict=None, /, **kwargs):
@@ -24,11 +25,8 @@ class Config(UserDict):
 
     def __setitem__(self, key: Any, item: Any) -> None:
         will_config_master = key in ["spark.master", "spark.remote"]
-        if self.master_configured and will_config_master:
-            raise AlreadyConfiguredError("Spark master/remote already configured.")
         if will_config_master:
             self.master_configured = True
-
         return super().__setitem__(key, item)
 
     def pretty_format(self) -> str:
@@ -76,10 +74,6 @@ class SparkEnvConfiger:
         "spark.driver.memory": ("SPARK_CONNECT_LOCAL_MEMORY", "512m"),
     }
 
-    _connect_client = {
-        "spark.remote": ("SPARK_CONNECT_REMOTE", "sc://localhost:15002"),
-    }
-
     _connect_server = {
         "spark.connect.grpc.binding.port": ("SPARK_CONNECT_SERVER_PORT", None),
         "spark.connect.grpc.arrow.maxBatchSize": (
@@ -91,6 +85,7 @@ class SparkEnvConfiger:
             None,
         ),
     }
+
     _k8s = {
         # Authenticate will auto config by k8s config file
         # May convert by k8s config file(if exsits)
@@ -98,7 +93,7 @@ class SparkEnvConfiger:
         "spark.kubernetes.namespace": ("SPARK_CONNECT_KUBERNETES_NAMESPACE", None),
         "spark.kubernetes.container.image": (
             "SPARK_CONNECT_KUBERNETES_IMAGE",
-            "registry.service.consul:4443/apache/spark:3.5.0",
+            "registry.service.consul:4443/apache/spark:3.4.1",
         ),
         "spark.kubernetes.container.image.pullSecrets": (
             "SPARK_CONNECT_KUBERNETES_IMAGE_PULL_SECRETS",
@@ -123,7 +118,8 @@ class SparkEnvConfiger:
         "spark.driver.host": ("SPARK_CONNECT_DRIVER_HOST", None),
         "spark.driver.bindAddress": ("SPARK_CONNECT_DRIVER_BINDADDRESS", "0.0.0.0"),
         "spark.kubernetes.driver.pod.name": ("SPARK_CONNECT_DRIVER_POD_NAME", None),
-        "spark.kubernetes.authenticate.driver.serviceAccountName": ("SPARK_CONNECT_DRIVER_SERVICE_ACCOUNT_NAME", "spark-connect"),
+        "spark.kubernetes.authenticate.driver.serviceAccountName": (
+            "SPARK_CONNECT_KUBERNETES_SERVICE_ACCOUNT_NAME", DEFAULT_SERVICE_ACCOUNT),
         # Config for executor
         "spark.kubernetes.executor.cores": (
             "SPARK_CONNECT_KUBERNETES_EXECUTOR_REQUEST_CORES",
@@ -154,13 +150,17 @@ class SparkEnvConfiger:
         self._config: Config = Config(self._config_from_env(self.default_config_mapper))
         logger.debug(f"Initialized config: {self._config}")
 
-    @property
-    def master_configured(self) -> bool:
-        return self._config.master_configured
+    def __get_kube_project_user(self):
+        if os.getenv("KUBE_PROJECT_USER"):
+            return os.getenv("KUBE_PROJECT_USER")
+        raise UnconfigurableError("Kube project user not set. Set KUBE_PROJECT_USER environment variable")
 
     def get_all(self) -> Dict[str, str]:
         return {k: v for k, v in self._config.items() if v is not None}
 
+    @property
+    def master_configured(self) -> bool:
+        return self._config.master_configured
 
     def _config_from_env(self, mapper: ConfigEnvMapper) -> Dict[str, Any]:
         config = dict()
@@ -179,13 +179,19 @@ class SparkEnvConfiger:
         return config
 
     def _config_from_json(self) -> Dict[str, Any]:
-        HOME_PATH = os.environ.get("SPARKMAGIC_CONF_DIR", "~/.sparkmagic")
-        CONFIG_FILE = os.environ.get("SPARKMAGIC_CONF_FILE", "config.json")
-        json_file_path  = os.path.join(HOME_PATH, CONFIG_FILE)
+        json_file_path = os.path.join(os.environ.get("SPARK_CONNECT_KUBERNETES_CONFIG_DIR", SPARK_CONFIG_DEFAULT_DIR),
+                                      os.environ.get("SPARK_CONNECT_KUBERNETES_CONFIG_FILE", SPARK_CONFIG_FILE_NAME))
         config = dict()
-        with open(json_file_path, 'r') as json_file:
-            config = json.load(json_file)
-        conf = config["session_configs"]["conf"]
+        conf = {}
+        try:
+            with open(json_file_path, 'r') as json_file:
+                config = json.load(json_file)
+            if "session_configs" in config:
+                conf = config["session_configs"]["conf"]
+            else:
+                conf = config["conf"]
+        except Exception as e:
+            logger.error(f"Failed to read config from file {e}")
         return conf
 
     def clear(self) -> SparkEnvConfiger:
@@ -197,9 +203,9 @@ class SparkEnvConfiger:
         return self
 
     def _merge_config(self, c: Dict[str, Any]) -> None:
-        logger.debug(f"Merge config: {c}")
         self._config.update(**c)
-        logger.debug(f"Current config: {self._config}")
+        # disable shuffle service for now
+        self._config["spark.shuffle.service.enabled"] = False
 
     def config(self, c: Dict[str, Any]) -> SparkEnvConfiger:
         self._merge_config(c)
@@ -226,17 +232,19 @@ class SparkEnvConfiger:
             }
         )
 
-    def config_k8s(
-        self,
-        custom_config: Optional[Dict[str, Any]] = None,
-        *,
-        k8s_config_path: Optional[str] = None,
+    def config_client_mode(
+            self,
+            custom_config: Optional[Dict[str, Any]] = None,
+            *,
+            k8s_config_path: Optional[str] = None,
     ) -> SparkEnvConfiger:
-        logger.info(f"Config master: k8s mode")
+        logger.info(f"Config client mode")
         if not custom_config:
             custom_config = dict()
         custom_config = {**self._config_from_json(), **custom_config}
         env_config = self._config_from_env(self._k8s)
+        if not env_config.get("spark.kubernetes.namespace"):
+            env_config["spark.kubernetes.namespace"] = get_namespace()
         if INCLUSTER:
             env_config.setdefault(
                 "spark.kubernetes.authenticate.oauthTokenFile", SERVICE_TOKEN_FILENAME
@@ -257,6 +265,10 @@ class SparkEnvConfiger:
             env_config.pop(k)
         env_config.update(**extracted_config)
 
+        if not env_config.get("spark.executor.resource.gpu.amount"):
+            env_config.pop("spark.executor.resource.gpu.vendor")
+            # env_config.pop("spark.executor.resource.gpu.discoveryScript")
+
         try:
             url, _, ca, key_file, cert_file = get_k8s_config(k8s_config_path)
         except Exception as e:
@@ -270,8 +282,6 @@ class SparkEnvConfiger:
             "spark.kubernetes.authenticate.clientCertFile": cert_file,
         }
 
-        logger.debug(f"Env configuration is {env_config}")
-        logger.debug(f"K8s configuration is {k8s_config}")
         return self.config(
             {
                 **env_config,
@@ -281,7 +291,7 @@ class SparkEnvConfiger:
         )
 
     def config_connect_client(
-        self, custom_config: Optional[Dict[str, Any]] = None
+            self, custom_config: Optional[Dict[str, Any]] = None
     ) -> SparkEnvConfiger:
         if not custom_config:
             custom_config = dict()
@@ -289,24 +299,29 @@ class SparkEnvConfiger:
 
         config = self.config(
             {
-                **self._config_from_env(self._connect_client),
+                **self._config_from_env({}),
                 **custom_config,
             }
         )
-        deployment_name = "g1--meb1000-spark-connect-server-deployment"
-        SparkConnectServer("g1",
-                           deployment_name,
-                           "registry.service.consul:4443/spark-connect-test:latest",
-                           "spark-launcher",
-                           "g1--meb1000").launch_spark_connect_server_on_k8s()
+        try:
+            spark_connect_server = SparkConnectServer(NAMESPACE,
+                                                      "registry.service.consul:4443/spark-connect-test:latest",
+                                                      os.getenv("SPARK_CONNECT_KUBERNETES_SERVICE_ACCOUNT_NAME",
+                                                                DEFAULT_SERVICE_ACCOUNT),
+                                                      self.__get_kube_project_user(),
+                                                      config._config).start()
+            config._config.__setitem__("spark.remote",
+                                       f"sc://{spark_connect_server.service_name}:{spark_connect_server.spark_connect_server_port }")
+        except Exception as e:
+            raise SparkConnectServerCreateError(f"Failed to start spark connect server. {e}")
         return config
 
     def config_connect_server(
-        self,
-        mode: Optional[str] = None,
-        custom_config: Optional[Dict[str, Any]] = None,
-        *,
-        k8s_config_path: Optional[str] = None,
+            self,
+            mode: Optional[str] = None,
+            custom_config: Optional[Dict[str, Any]] = None,
+            *,
+            k8s_config_path: Optional[str] = None,
     ) -> SparkEnvConfiger:
         if not custom_config:
             custom_config = dict()
@@ -317,10 +332,10 @@ class SparkEnvConfiger:
             if mode == "local":
                 self.config_local(custom_config)
             elif mode == "k8s":
-                self.config_k8s(custom_config, k8s_config_path=k8s_config_path)
+                self.config_client_mode(custom_config, k8s_config_path=k8s_config_path)
             else:
                 raise UnconfigurableError(f"Unknown mode: {mode}")
         if k8s_config_path and mode != "k8s":
             logger.warning(f"k8s_config_path has no effort for mode: {mode}")
         logger.info(f"Config connect server")
-        return self.config(self._config_from_env(self._connect_server))
+        return self.config(self._config_from_env({}))

@@ -80,7 +80,7 @@ class SparkMagic(Magics):
         elif self.mode == "connect_client":
             self.builder.config_connect_client()
         elif self.mode == "k8s":
-            self.builder.config_k8s(k8s_config_path=k8s_config_path)
+            self.builder.config_client_mode(k8s_config_path=k8s_config_path)
         else:
             raise UnconfigurableError(f"Unconfigurable mode {self.mode}")
 

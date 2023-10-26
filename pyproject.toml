@@ -17,7 +17,7 @@ classifiers = [
     'Programming Language :: Python :: 3.11',
 ]
 [project.optional-dependencies]
-pyspark = ["pyspark[pandas_on_spark,sql,connect]"]
+pyspark = ["pyspark[pandas_on_spark,sql,connect, grpc_status]"]
 magic = ["spark_connect[pyspark]", "ipython"]
 
 all = ["spark_connect[pyspark]", "spark_connect[magic]"]
