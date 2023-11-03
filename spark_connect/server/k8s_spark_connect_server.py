@@ -287,11 +287,11 @@ class SparkConnectServer:
             except KeyError as e:
                 pass
         # remove executor envs
-        exec_env_configs = []
+        other_unwanted_configs = []
         for key in self.spark_configuration:
-            if "spark.executorEnv" in key:
-                exec_env_configs.append(key)
-        for key in exec_env_configs:
+            if "spark.executorEnv" in key or "spark.yarn" in key:
+                other_unwanted_configs.append(key)
+        for key in other_unwanted_configs:
             try:
                 self.spark_configuration.pop(key)
             except KeyError as e:
