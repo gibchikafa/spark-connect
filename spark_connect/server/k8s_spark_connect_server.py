@@ -296,7 +296,7 @@ class SparkConnectServer:
             except KeyError as e:
                 pass
         # make sure it is indeed a spark 3.5.0 image
-        self.spark_configuration["spark.kubernetes.container.image"] = "registry.service.consul:4443/apache/spark:3.4.1"
+        self.spark_configuration["spark.kubernetes.container.image"] = "spark-pi:3.4.1"
 
     def __remove_connect_server(self):
         try:
