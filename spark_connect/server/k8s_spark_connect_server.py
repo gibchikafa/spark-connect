@@ -267,8 +267,7 @@ class SparkConnectServer:
 
     def __get_resource_requests(self):
         resources = client.V1ResourceRequirements(
-            requests={"cpu": self.spark_configuration["spark.driver.cores"] + SPARK_CONNECT_SERVER_CPU,
-                      "memory": self.__get_memory_request()},
+            requests={"cpu": self.__get_driver_cpu_requests(), "memory": self.__get_driver_memory_request()},
         )
         return resources
 
@@ -315,9 +314,13 @@ class SparkConnectServer:
                     raise SparkConnectServerCreateError("Timeout out to remove existing spark connect server")
             trials = trials + 1
 
-    def __get_memory_request(self):
+    def __get_driver_memory_request(self):
         memory = self.spark_configuration["spark.driver.memory"].upper().replace("M", "")
         return str(float(memory) + float(SPARK_CONNECT_SERVER_MEMORY)) + "m"
+
+    def __get_driver_cpu_requests(self):
+        cpu = int(self.spark_configuration["spark.driver.cores"]) + SPARK_CONNECT_SERVER_CPU
+        return str(cpu)
 
 
 
